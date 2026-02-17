@@ -2,52 +2,32 @@
 import json
 import google.generativeai as genai
 from config import settings
-from utils import sanitize_text, process_image
+from utils import sanitize_text, process_image, extract_text_from_file, convert_pdf_to_images
 
 # 1. Init Gemini
 genai.configure(api_key=settings.GEMINI_API_KEY)
 model = genai.GenerativeModel(settings.GEMINI_MODEL)
 
-# 2. LOAD YOUR NEW JSON DATABASE
-# This attempts to load 'medical_knowledge.json' when the server starts.
+# 2. LOAD DB (Same as before)
 try:
     with open("medical_knowledge.json", "r", encoding="utf-8") as f:
         MEDICAL_DB = json.load(f)
-        print(f"✅ Medical Knowledge Base Loaded: {len(MEDICAL_DB)} topics.")
 except FileNotFoundError:
     MEDICAL_DB = []
-    print("⚠️ WARNING: medical_knowledge.json not found. The app will run without RAG context.")
-
 
 def retrieve_context(query: str) -> str:
-    """
-    RAG Search: Finds relevant medical info from your JSON file.
-    """
-    if not MEDICAL_DB:
-        return "No specific medical database available."
-
+    if not MEDICAL_DB: return "No database."
     query_lower = query.lower()
-
-    # Priority 1: Exact Title Match (e.g., User asks "A1C", finds "A1C" topic)
     for entry in MEDICAL_DB:
         if entry.get('title', '').lower() in query_lower:
             return entry.get('content', '')
+    return "No specific topic found."
 
-    # Priority 2: Keyword Search inside Content
-    # If the user asks "diabetes test", it might not match title "A1C" but matches the text inside.
-    for entry in MEDICAL_DB:
-        if query_lower in entry.get('content', '').lower():
-            # Return first 2000 chars to keep prompt size manageable
-            return entry.get('content', '')[:2000]
-
-    return "No specific medical topic found in database."
-
-
-# 3. UPDATED PROMPT (Now mentions the Retrieved Context)
 SYSTEM_PROMPT = """
 You are a conservative medical AI assistant. 
-Use the [RETRIEVED CONTEXT] below to inform your analysis, but prioritize patient safety.
-Analyze the input and return ONLY valid JSON matching this schema:
+Analyze the [PATIENT QUERY] and any [UPLOADED IMAGES/DOCS].
+If the images are medical reports, extract the text and interpret the values.
+Return ONLY valid JSON matching this schema:
 {
     "findings": "str",
     "potential_diagnosis": "str",
@@ -55,49 +35,51 @@ Analyze the input and return ONLY valid JSON matching this schema:
     "diet_plan": ["str"],
     "is_emergency": bool
 }
-Do not use markdown formatting. Just raw JSON.
 """
 
-
-async def analyze_medical_data(query: str, image_bytes: bytes = None) -> dict:
-    # 1. Sanitize Inputs
+async def analyze_medical_data(query: str, file_bytes: bytes = None, content_type: str = None) -> dict:
     safe_query = sanitize_text(query)
-
-    # 2. RETRIEVE (Get data from your JSON)
     context_data = retrieve_context(safe_query)
+    
+    # Prepare the prompt parts
+    prompt_content = [
+        SYSTEM_PROMPT, 
+        f"[RETRIEVED CONTEXT]: {context_data}",
+        f"[PATIENT QUERY]: {safe_query}"
+    ]
 
-    # 3. AUGMENT (Inject that data into the prompt)
-    rag_prompt = f"""
-    [RETRIEVED CONTEXT FROM DATABASE]
-    {context_data}
+    # --- HANDLE FILES ---
+    if file_bytes and content_type:
+        if "pdf" in content_type:
+            # 1. Convert PDF pages to Images (Vision approach for scanned docs)
+            pdf_images = convert_pdf_to_images(file_bytes)
+            if pdf_images:
+                prompt_content.append(f"[Start of PDF Images ({len(pdf_images)} pages)]")
+                prompt_content.extend(pdf_images) # Add all images to prompt
+            else:
+                prompt_content.append("Error: Could not convert PDF to images.")
 
-    [PATIENT QUERY]
-    {safe_query}
-    """
+        elif "image" in content_type:
+            # 2. Process Single Image
+            img = process_image(file_bytes)
+            prompt_content.append(img)
+            
+        else:
+            # 3. Process Text Doc (Word/Txt)
+            text_content = extract_text_from_file(file_bytes, content_type)
+            prompt_content.append(f"[DOCUMENT CONTENT]: {text_content}")
 
-    content = [SYSTEM_PROMPT, rag_prompt]
-
-    # 4. Process Image if exists
-    if image_bytes:
-        processed_img = process_image(image_bytes)
-        content.append(processed_img)
-
-    # 5. Call AI
+    # --- CALL AI ---
     try:
-        response = model.generate_content(content)
-
-        # Clean Response
+        response = model.generate_content(prompt_content)
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
-
-    except json.JSONDecodeError:
+    except Exception as e:
+        # Fallback error
         return {
-            "findings": "AI Error: Could not parse response",
+            "findings": f"Error processing request: {str(e)}",
             "potential_diagnosis": "Unknown",
             "remedies": [],
             "diet_plan": [],
             "is_emergency": False
         }
-    except Exception as e:
-        # Pass the actual error up so you can see it in logs
-        raise e
