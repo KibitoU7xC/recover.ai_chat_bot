@@ -22,7 +22,7 @@ app.add_middleware(
 
 # --- SECURITY DEPENDENCY ---
 async def verify_token(x_api_key: str = Header(...)):
-    """Enforces that your friend sends the correct password in the headers."""
+    """Enforces that your frontend sends the correct password in the headers."""
     if x_api_key != settings.API_SECRET_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid Secret Token")
 
@@ -31,27 +31,21 @@ async def verify_token(x_api_key: str = Header(...)):
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze_endpoint(
         query: str = Form(...),
-        image: UploadFile = File(None),
-        token: str = Depends(verify_token)  # 🔒 Locks the endpoint
+        file: UploadFile = File(None),  # <-- CHANGED FROM 'image' TO 'file'
+        token: str = Depends(verify_token)
 ):
     logger.info("Received analysis request")
 
-    image_data = None
-    if image:
-        image_data = await image.read()
+    file_data = None
+    mime_type = None
+    if file:
+        file_data = await file.read()
+        mime_type = file.content_type  # <-- NEW: Get the file type (image/png or application/pdf)
 
     try:
-        result = await analyze_medical_data(query, image_data)
+        # Pass the mime_type to our service
+        result = await analyze_medical_data(query, file_data, mime_type)
         return result
     except Exception as e:
         logger.error(f"Error processing request: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ✅ GOOD for Render
-import os
-import uvicorn
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
