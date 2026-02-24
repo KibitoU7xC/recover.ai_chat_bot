@@ -25,6 +25,8 @@ def process_image(image_bytes: bytes):
         enhancer = ImageEnhance.Contrast(img_gray)
         final_img = enhancer.enhance(1.5)
 
+
+
         return final_img
     except Exception as e:
         print(f"❌ UTILS.PY CRASHED: {e}")

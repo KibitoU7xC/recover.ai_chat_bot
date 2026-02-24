@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from services import analyze_medical_data
 from schemas import AnalysisResult
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 
 # Setup Logging
@@ -11,6 +12,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doctor_brain")
 
 app = FastAPI(title="Doctor Brain API", version="2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all websites to connect (good for testing)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows POST, GET, OPTIONS, etc.
+    allow_headers=["*"],  # Crucial: This tells the browser your 'x-api-key' is safe!
+)
 
 app.add_middleware(
     CORSMiddleware,
